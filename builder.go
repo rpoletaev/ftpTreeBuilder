@@ -12,32 +12,19 @@ var (
 	wg                   sync.WaitGroup
 )
 
-type Tree struct {
-	Root       *FTPNode
-	fm         sync.RWMutex
-	filesCount int
-	dm         sync.RWMutex
-	dirsCount  int
-}
-
-func (t *Tree) incrFiles() {
-	t.fm.Lock()
-	defer t.fm.Unlock()
-	t.filesCount++
-}
-
-func (t *Tree) incrDirs() {
-	t.dm.Lock()
-	defer t.dm.Unlock()
-	t.dirsCount++
-}
-
 type FTPBuilder struct {
 	*FTPBuilderConfig
+	Done bool
+}
+
+func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
+	return &FTPBuilder{
+		FTPBuilderConfig: c,
+	}
 }
 
 // BuildTree Строит дерево каталогов
-func (b *FTPBuilder) BuildTree() *Tree {
+func (b *FTPBuilder) BuildTree(done <-chan struct{}) *Tree {
 	availableConnections = make(chan *goftp.FTP, b.MaxFTPCons)
 	for len(availableConnections) < b.MaxFTPCons {
 		availableConnections <- b.ftpConnect()
@@ -45,19 +32,19 @@ func (b *FTPBuilder) BuildTree() *Tree {
 
 	stop := make(chan struct{})
 	//Периодически выводим количество свободных соединений
-	go func(done <-chan struct{}) {
+	go func() {
 		ticker := time.NewTicker(20 * time.Second)
 		for {
 			select {
 			case <-ticker.C:
 				b.Println(len(availableConnections))
-			case <-done:
+			case <-stop:
 				ticker.Stop()
 				closeAvailableConnections()
 				return
 			}
 		}
-	}(stop)
+	}()
 
 	tree := &Tree{}
 	root := &FTPNode{
@@ -147,13 +134,16 @@ func (b *FTPBuilder) getList(path string) ([]string, error) {
 func (b *FTPBuilder) processDir(content *FTPNode) {
 	content.NodeType = NodeTypeFolder
 	content.tree.incrDirs()
+	if b.Done {
+		return
+	}
 	wg.Add(1)
 	go b.CreateTree(content)
 }
 
 //Обработка листа файла
 func processFile(content *FTPNode) {
-	content.NodeType = NodeTypeFile
+	content.NodeType = NodeTypeArchive
 	content.tree.incrFiles()
 }
 

@@ -1,0 +1,33 @@
+package main
+
+import (
+	"bufio"
+	tb "github.com/rpoletaev/ftpTreeBuilder"
+	"log"
+	"os"
+)
+
+func main() {
+	config := &tb.FTPBuilderConfig{
+		FTPAddr:  "ftp.goszakupki.gov.ru:21",
+		FTPLogin: "free",
+		FTPPass:  "free",
+		Logger:   log.New(os.Stdout, "ftptree", 1),
+	}
+
+	stop := make(chan struct{})
+	b := tb.GetFTPBuilder(config)
+
+	scanner := bufio.NewScanner(os.Stdin)
+	go func() {
+		for scanner.Scan() {
+			if scanner.Text() == "stop" {
+				b.Done = true
+			}
+		}
+	}()
+
+	tree := b.BuildTree(stop)
+	println("DirsCount: ", tree.DirsCount())
+	println("FilesCount: ", tree.FilesCount())
+}

@@ -5,8 +5,9 @@ import (
 )
 
 const (
-	NodeTypeFolder = 1
-	NodeTypeFile   = 2
+	NodeTypeFolder  = 1
+	NodeTypeArchive = 2
+	NodeTypeXML     = 3
 )
 
 // FTPNode узел с содержимым
