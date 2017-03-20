@@ -20,6 +20,7 @@ type FTPBuilderConfig struct {
 	FTPAddr               string //"ftp.zakupki.gov.ru:21"
 	FTPLogin              string
 	FTPPass               string
+	DBConString           string
 }
 
 // Prepare установка, при необходимости, дефолтных значений

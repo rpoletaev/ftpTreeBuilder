@@ -1,7 +1,9 @@
 package ftpTreeBuilder
 
 import (
+	"fmt"
 	"github.com/dutchcoders/goftp"
+	"github.com/jinzhu/gorm"
 	"path"
 	"sync"
 	"time"
@@ -14,12 +16,21 @@ var (
 
 type FTPBuilder struct {
 	*FTPBuilderConfig
+	db   *gorm.DB
 	Done bool
 }
 
 func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
+	c.Prepare()
+	fmt.Println(*c)
+	dbc, err := gorm.Open("mysql", c.DBConString)
+	if err != nil {
+		panic(err)
+	}
+	dbc.AutoMigrate(&FTPNode{})
 	return &FTPBuilder{
 		FTPBuilderConfig: c,
+		db:               dbc,
 	}
 }
 
@@ -88,13 +99,21 @@ func (b *FTPBuilder) CreateTree(content *FTPNode) {
 
 		child := &FTPNode{
 			Path: path.Join(content.Path, name),
+			tree: content.tree,
 		}
 
 		if IsDir(child.Name()) {
 			b.processDir(child)
 			content.Children[i] = child
 		} else if IsZip(child.Name()) {
+			finded := []FTPNode{}
+			b.db.Where("path = ?", child.Path).First(&finded)
 			processFile(child)
+			if len(finded) == 0 {
+				if err = b.db.Create(child).Error; err != nil {
+					b.Printf("%v\n", err)
+				}
+			}
 			content.Children[i] = child
 		}
 	}
@@ -134,9 +153,7 @@ func (b *FTPBuilder) getList(path string) ([]string, error) {
 func (b *FTPBuilder) processDir(content *FTPNode) {
 	content.NodeType = NodeTypeFolder
 	content.tree.incrDirs()
-	if b.Done {
-		return
-	}
+	fmt.Println(content.Path)
 	wg.Add(1)
 	go b.CreateTree(content)
 }
@@ -188,6 +205,7 @@ func getConnection() *goftp.FTP {
 	for {
 		select {
 		case c := <-availableConnections:
+			fmt.Println("return connection")
 			return c
 		}
 	}

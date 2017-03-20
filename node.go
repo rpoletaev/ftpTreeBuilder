@@ -1,6 +1,8 @@
 package ftpTreeBuilder
 
 import (
+	//"github.com/dutchcoders/goftp"
+	"github.com/jinzhu/gorm"
 	"path/filepath"
 )
 
@@ -12,8 +14,9 @@ const (
 
 // FTPNode узел с содержимым
 type FTPNode struct {
+	gorm.Model
 	tree      *Tree
-	Path      string
+	Path      string `gorm:"unique_index"`
 	NodeType  uint
 	ErrorText string
 	Children  []*FTPNode
@@ -30,17 +33,17 @@ func (n FTPNode) Name() string {
 }
 
 // Walk Обходит все дерево и выполняет над каждым узлом wf
-func (c *FTPNode) Walk(wf func(content *FTPNode) error) error {
-	err := wf(c)
-	if err != nil {
-		return err
-	}
+// func (c *FTPNode) Walk(wf func(content *FTPNode, ftp *goftp.FTP) error) error {
+// 	err := wf(c)
+// 	if err != nil {
+// 		return err
+// 	}
 
-	for _, child := range c.Children {
-		err = child.Walk(wf)
-		if err != nil {
-			return err
-		}
-	}
-	return nil
-}
+// 	for _, child := range c.Children {
+// 		err = child.Walk(wf)
+// 		if err != nil {
+// 			return err
+// 		}
+// 	}
+// 	return nil
+// }
