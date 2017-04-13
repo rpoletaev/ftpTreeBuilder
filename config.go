@@ -16,11 +16,13 @@ type FTPBuilderConfig struct {
 	MaxFTPCons            int
 	ReconnectIterCount    int
 	ReconnectSleepSeconds int
+	ServicePort           string
 	RootNodeDirectory     string
 	FTPAddr               string //"ftp.zakupki.gov.ru:21"
 	FTPLogin              string
 	FTPPass               string
 	DBConString           string
+	RedisConString        string
 }
 
 // Prepare установка, при необходимости, дефолтных значений

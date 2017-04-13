@@ -3,6 +3,7 @@ package ftpTreeBuilder
 import (
 	"fmt"
 	"github.com/dutchcoders/goftp"
+	"github.com/garyburd/redigo/redis"
 	"github.com/jinzhu/gorm"
 	"path"
 	"sync"
@@ -16,26 +17,35 @@ var (
 
 type FTPBuilder struct {
 	*FTPBuilderConfig
-	db   *gorm.DB
-	Done bool
+	tree               *Tree
+	db                 *gorm.DB
+	redisPool          *redis.Pool
+	mySQLReconnectDone chan struct{}
+	Done               bool
 }
 
 func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
-	c.Prepare()
+	defer c.Prepare()
 	fmt.Println(*c)
 	dbc, err := gorm.Open("mysql", c.DBConString)
 	if err != nil {
 		panic(err)
 	}
 	dbc.AutoMigrate(&FTPNode{})
-	return &FTPBuilder{
-		FTPBuilderConfig: c,
-		db:               dbc,
+	dbc.DB().SetConnMaxLifetime(time.Minute)
+	dbc.DB().SetMaxOpenConns(10)
+	b := &FTPBuilder{
+		FTPBuilderConfig:   c,
+		db:                 dbc,
+		mySQLReconnectDone: make(chan struct{}, 1),
+		redisPool:          newRedisPool(c.RedisConString),
 	}
+	go b.MySQLReconnect()
+	return b
 }
 
 // BuildTree Строит дерево каталогов
-func (b *FTPBuilder) BuildTree(done <-chan struct{}) *Tree {
+func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	availableConnections = make(chan *goftp.FTP, b.MaxFTPCons)
 	for len(availableConnections) < b.MaxFTPCons {
 		availableConnections <- b.ftpConnect()
@@ -57,22 +67,23 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) *Tree {
 		}
 	}()
 
-	tree := &Tree{}
+	b.tree = &Tree{}
 	root := &FTPNode{
-		tree: tree,
+		tree: b.tree,
 		Path: b.RootNodeDirectory,
 	}
 
-	tree.Root = root
+	b.tree.Root = root
 
 	ts := time.Now()
-	b.processDir(tree.Root)
+	b.processDir(b.tree.Root)
 	wg.Wait()
 	stop <- struct{}{}
 	close(stop)
 
-	b.Printf("Время выполнения: %v\n", time.Since(ts))
-	return tree
+	b.Printf("Время построения дерева: %v\n", time.Since(ts))
+	b.Printf("Количество файлов: %d", b.tree.FilesCount())
+	b.Printf("Количество папок: %d", b.tree.DirsCount())
 }
 
 // CreateTree достраивает дерево от переданного узла
@@ -111,6 +122,10 @@ func (b *FTPBuilder) CreateTree(content *FTPNode) {
 			processFile(child)
 			if len(finded) == 0 {
 				if err = b.db.Create(child).Error; err != nil {
+					b.Printf("%v\n", err)
+				}
+
+				if err = b.fileToQueue(child.Path); err != nil {
 					b.Printf("%v\n", err)
 				}
 			}
@@ -216,4 +231,38 @@ func closeAvailableConnections() {
 		c.Close()
 	}
 	close(availableConnections)
+}
+
+func (b *FTPBuilder) fileToQueue(fname string) error {
+	conn := b.redisPool.Get()
+	defer conn.Close()
+	_, err := conn.Do("LPUSH", "DownloadQueue", fname)
+	return err
+}
+
+func newRedisPool(addr string) *redis.Pool {
+	return &redis.Pool{
+		MaxIdle:     3,
+		IdleTimeout: 240 * time.Second,
+		Dial: func() (redis.Conn, error) {
+			return redis.Dial("tcp", addr, redis.DialDatabase(0))
+		},
+	}
+}
+
+func (b *FTPBuilder) MySQLReconnect() {
+	ticker := time.NewTicker(30 * time.Second)
+	for _ = range ticker.C {
+		select {
+		case <-b.mySQLReconnectDone:
+			ticker.Stop()
+			return
+		default:
+			if err := b.db.DB().Ping(); err != nil {
+				if b.db, err = gorm.Open("mysql", b.DBConString); err != nil {
+					b.Logger.Fatalf("Ошибка соединения с mysql: %v", err)
+				}
+			}
+		}
+	}
 }
