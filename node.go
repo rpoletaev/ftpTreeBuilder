@@ -15,11 +15,12 @@ const (
 // FTPNode узел с содержимым
 type FTPNode struct {
 	gorm.Model
-	tree      *Tree
-	Path      string `gorm:"unique_index"`
-	NodeType  uint
-	ErrorText string
-	Children  []*FTPNode
+	tree       *Tree
+	Path       string `gorm:"unique_index"`
+	NodeType   uint
+	ErrorText  string
+	Children   []*FTPNode
+	Downloaded uint8
 }
 
 // Name returns node name
