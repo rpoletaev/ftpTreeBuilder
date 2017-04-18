@@ -84,6 +84,7 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	b.Printf("Время построения дерева: %v\n", time.Since(ts))
 	b.Printf("Количество файлов: %d", b.tree.FilesCount())
 	b.Printf("Количество папок: %d", b.tree.DirsCount())
+	b.writeResultMessage()
 }
 
 // CreateTree достраивает дерево от переданного узла
@@ -264,5 +265,12 @@ func (b *FTPBuilder) MySQLReconnect() {
 				}
 			}
 		}
+	}
+}
+
+func (b *FTPBuilder) writeResultMessage() {
+	c := b.redisPool.Get()
+	if _, err := c.Do("PUBLISH", "FTPBuilderResult", time.Now().Unix()); err != nil {
+		b.Logger.Printf("Error on sending result: %v\n", err)
 	}
 }
