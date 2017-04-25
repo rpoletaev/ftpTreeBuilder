@@ -109,25 +109,40 @@ func (b *FTPBuilder) CreateTree(content *FTPNode) {
 			continue
 		}
 
+		size, err := SizeFromFileString(item)
+		if err != nil {
+			continue
+		}
+
 		child := &FTPNode{
 			Path: path.Join(content.Path, name),
 			tree: content.tree,
+		}
+
+		if size <= 22 {
+			child.Downloaded = 1
+		} else {
+			child.Downloaded = 0
 		}
 
 		if IsDir(child.Name()) {
 			b.processDir(child)
 			content.Children[i] = child
 		} else if IsZip(child.Name()) {
-			finded := []FTPNode{}
-			b.db.Where("path = ?", child.Path).First(&finded)
+			model := &FTPNode{}
+			count := 0
+			b.db.Model(model).Where("path = ?", child.Path).Count(&count)
 			processFile(child)
-			if len(finded) == 0 {
+			if count == 0 {
 				if err = b.db.Create(child).Error; err != nil {
 					b.Printf("%v\n", err)
 				}
 
-				if err = b.fileToQueue(child.Path); err != nil {
-					b.Printf("%v\n", err)
+				if child.Downloaded == 0 {
+					fmt.Println(child.Path)
+					if err = b.fileToQueue(child.Path); err != nil {
+						b.Printf("%v\n", err)
+					}
 				}
 			}
 			content.Children[i] = child
@@ -169,7 +184,7 @@ func (b *FTPBuilder) getList(path string) ([]string, error) {
 func (b *FTPBuilder) processDir(content *FTPNode) {
 	content.NodeType = NodeTypeFolder
 	content.tree.incrDirs()
-	fmt.Println(content.Path)
+	// fmt.Println(content.Path)
 	wg.Add(1)
 	go b.CreateTree(content)
 }

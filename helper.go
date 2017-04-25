@@ -22,7 +22,7 @@ func SizeFromFileString(s string) (int, error) {
 
 	sizeField := fields[4]
 	if sizeField == "" {
-		return 0, fmt.Errorf("Неверный формат данных в поле размер")
+		return 0, fmt.Errorf("Неверный формат данных в поле размер: %s", s)
 	}
 
 	return strconv.Atoi(sizeField)
