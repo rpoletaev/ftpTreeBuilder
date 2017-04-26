@@ -5,7 +5,7 @@ import (
 )
 
 const (
-	defaultMaxFTPCons            = 10
+	defaultMaxFTPCons            = 5
 	defaultReconnectIterCount    = 5
 	defaultReconnectSleepSeconds = 10
 )

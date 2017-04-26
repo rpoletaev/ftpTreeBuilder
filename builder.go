@@ -2,12 +2,16 @@ package ftpTreeBuilder
 
 import (
 	"fmt"
-	"github.com/dutchcoders/goftp"
-	"github.com/garyburd/redigo/redis"
-	"github.com/jinzhu/gorm"
 	"path"
 	"sync"
 	"time"
+
+	"bytes"
+	"strings"
+
+	"github.com/dutchcoders/goftp"
+	"github.com/garyburd/redigo/redis"
+	"github.com/jinzhu/gorm"
 )
 
 var (
@@ -33,7 +37,7 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 	}
 	dbc.AutoMigrate(&FTPNode{})
 	dbc.DB().SetConnMaxLifetime(time.Minute)
-	dbc.DB().SetMaxOpenConns(10)
+	dbc.DB().SetMaxOpenConns(5)
 	b := &FTPBuilder{
 		FTPBuilderConfig:   c,
 		db:                 dbc,
@@ -80,6 +84,9 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	wg.Wait()
 	stop <- struct{}{}
 	close(stop)
+	if err := b.treeToMysql(); err != nil {
+		panic(err)
+	}
 
 	b.Printf("Время построения дерева: %v\n", time.Since(ts))
 	b.Printf("Количество файлов: %d", b.tree.FilesCount())
@@ -138,11 +145,8 @@ func (b *FTPBuilder) CreateTree(content *FTPNode) {
 					b.Printf("%v\n", err)
 				}
 
-				if child.Downloaded == 0 {
-					fmt.Println(child.Path)
-					if err = b.fileToQueue(child.Path); err != nil {
-						b.Printf("%v\n", err)
-					}
+				if err = b.fileToQueue(child.Path); err != nil {
+					b.Printf("%v\n", err)
 				}
 			}
 			content.Children[i] = child
@@ -288,4 +292,35 @@ func (b *FTPBuilder) writeResultMessage() {
 	if _, err := c.Do("PUBLISH", "FTPBuilderResult", time.Now().Unix()); err != nil {
 		b.Logger.Printf("Error on sending result: %v\n", err)
 	}
+}
+
+func (b *FTPBuilder) treeToMysql() error {
+	c := b.redisPool.Get()
+	l, err := redis.Int64(c.Do("LLEN", "DownloadQueue"))
+	if err != nil {
+		return err
+	}
+
+	for i := int64(0); i <= l+1; i = i + 500 {
+		paths, err := redis.Strings(c.Do("LRANGE", "DownloadQueue", i, i+500))
+		if err != nil {
+			return err
+		}
+
+		buf := bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
+		lastIndex := len(paths) - 1
+		for j, path := range paths {
+			buf.WriteString("(")
+			buf.WriteString(path)
+			buf.WriteString(",0)")
+
+			if j < lastIndex {
+				buf.WriteString(",")
+			}
+		}
+		if err = b.db.Raw(buf.String(), strings.Join(paths, ",0),(")).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
