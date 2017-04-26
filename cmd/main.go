@@ -2,11 +2,13 @@ package main
 
 import (
 	//"bufio"
-	_ "github.com/jinzhu/gorm/dialects/mysql"
-	tb "github.com/rpoletaev/ftpTreeBuilder"
 	"log"
 	"net/http"
 	"os"
+	"time"
+
+	_ "github.com/jinzhu/gorm/dialects/mysql"
+	tb "github.com/rpoletaev/ftpTreeBuilder"
 )
 
 func main() {
@@ -22,8 +24,9 @@ func main() {
 	}
 
 	var stop chan struct{}
+	time.Sleep(1 * time.Minute)
 	b := tb.GetFTPBuilder(config)
-
+	println("Сервис `готов")
 	http.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
 		stop = make(chan struct{})
 		go b.BuildTree(stop)
