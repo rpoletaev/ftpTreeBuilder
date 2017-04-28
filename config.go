@@ -23,6 +23,7 @@ type FTPBuilderConfig struct {
 	FTPPass               string
 	DBConString           string
 	RedisConString        string
+	RedisPassword         string `yaml:"redis_password"`
 }
 
 // Prepare установка, при необходимости, дефолтных значений

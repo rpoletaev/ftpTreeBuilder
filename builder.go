@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"bytes"
-	"strings"
 
 	"github.com/dutchcoders/goftp"
 	"github.com/garyburd/redigo/redis"
@@ -25,6 +24,7 @@ type FTPBuilder struct {
 	db                 *gorm.DB
 	redisPool          *redis.Pool
 	mySQLReconnectDone chan struct{}
+	batchChan          chan string
 	Done               bool
 }
 
@@ -42,7 +42,7 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 		FTPBuilderConfig:   c,
 		db:                 dbc,
 		mySQLReconnectDone: make(chan struct{}, 1),
-		redisPool:          newRedisPool(c.RedisConString),
+		redisPool:          newRedisPool(c.RedisConString, "t=95ZZZ%"),
 	}
 	go b.MySQLReconnect()
 	return b
@@ -50,6 +50,7 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 
 // BuildTree Строит дерево каталогов
 func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
+	b.batchChan = make(chan string, 500)
 	availableConnections = make(chan *goftp.FTP, b.MaxFTPCons)
 	for len(availableConnections) < b.MaxFTPCons {
 		availableConnections <- b.ftpConnect()
@@ -84,19 +85,26 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	wg.Wait()
 	stop <- struct{}{}
 	close(stop)
-	if err := b.treeToMysql(); err != nil {
-		panic(err)
-	}
-
 	b.Printf("Время построения дерева: %v\n", time.Since(ts))
 	b.Printf("Количество файлов: %d", b.tree.FilesCount())
 	b.Printf("Количество папок: %d", b.tree.DirsCount())
+
+	// b.Println("")
+	// b.Printf("Сохраним дерево в mysql")
+	// ts = time.Now()
+	// if err := b.TreeToMysql(); err != nil {
+	// 	panic(err)
+	// }
+	// b.Printf("Время сохранения: %v\n", time.Since(ts))
+
 	b.writeResultMessage()
 }
 
 // CreateTree достраивает дерево от переданного узла
 func (b *FTPBuilder) CreateTree(content *FTPNode) {
-	defer wg.Done()
+	defer func() {
+		wg.Done()
+	}()
 	list, err := b.getList(content.Path)
 	if err != nil {
 		b.Printf("Error on process %s\n", content.Path)
@@ -141,10 +149,7 @@ func (b *FTPBuilder) CreateTree(content *FTPNode) {
 			b.db.Model(model).Where("path = ?", child.Path).Count(&count)
 			processFile(child)
 			if count == 0 {
-				if err = b.db.Create(child).Error; err != nil {
-					b.Printf("%v\n", err)
-				}
-
+				b.batchChan <- child.Path
 				if err = b.fileToQueue(child.Path); err != nil {
 					b.Printf("%v\n", err)
 				}
@@ -260,12 +265,12 @@ func (b *FTPBuilder) fileToQueue(fname string) error {
 	return err
 }
 
-func newRedisPool(addr string) *redis.Pool {
+func newRedisPool(addr, pwd string) *redis.Pool {
 	return &redis.Pool{
 		MaxIdle:     3,
 		IdleTimeout: 240 * time.Second,
 		Dial: func() (redis.Conn, error) {
-			return redis.Dial("tcp", addr, redis.DialDatabase(0))
+			return redis.Dial("tcp", addr, redis.DialDatabase(0), redis.DialPassword(pwd))
 		},
 	}
 }
@@ -294,10 +299,12 @@ func (b *FTPBuilder) writeResultMessage() {
 	}
 }
 
-func (b *FTPBuilder) treeToMysql() error {
+func (b *FTPBuilder) TreeToMysql() error {
 	c := b.redisPool.Get()
+	println("treeToMysql")
 	l, err := redis.Int64(c.Do("LLEN", "DownloadQueue"))
 	if err != nil {
+		println("Error on get len queue")
 		return err
 	}
 
@@ -310,17 +317,44 @@ func (b *FTPBuilder) treeToMysql() error {
 		buf := bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
 		lastIndex := len(paths) - 1
 		for j, path := range paths {
-			buf.WriteString("(")
+			buf.WriteString("(\"")
 			buf.WriteString(path)
-			buf.WriteString(",0)")
+			buf.WriteString("\",0)")
 
 			if j < lastIndex {
 				buf.WriteString(",")
 			}
 		}
-		if err = b.db.Raw(buf.String(), strings.Join(paths, ",0),(")).Error; err != nil {
-			return err
+
+		if err = b.db.Exec(buf.String()).Error; err != nil {
+			fmt.Printf("%v\n", err)
 		}
 	}
 	return nil
+}
+func (b *FTPBuilder) Batch() {
+	var buf *bytes.Buffer
+	counter := 0
+	for s := range b.batchChan {
+		if counter == 0 {
+			buf = bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
+		}
+		buf.WriteString("(\"")
+		buf.WriteString(s)
+		buf.WriteString("\",0)")
+
+		if counter < 500 {
+
+			counter++
+			buf.WriteString(",")
+
+		} else {
+
+			counter = 0
+			if err := b.db.Exec(buf.String()).Error; err != nil {
+				fmt.Printf("%v\n", err)
+			}
+
+		}
+	}
 }

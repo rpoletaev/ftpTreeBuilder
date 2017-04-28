@@ -24,12 +24,18 @@ func main() {
 	}
 
 	var stop chan struct{}
-	time.Sleep(1 * time.Minute)
+	time.Sleep(30 * time.Second)
 	b := tb.GetFTPBuilder(config)
 	println("Сервис `готов")
 	http.HandleFunc("/start", func(w http.ResponseWriter, r *http.Request) {
 		stop = make(chan struct{})
 		go b.BuildTree(stop)
+		w.Write([]byte("Сервис запущен"))
+	})
+
+	http.HandleFunc("/save_tree", func(w http.ResponseWriter, r *http.Request) {
+		println("===============")
+		go b.TreeToMysql()
 		w.Write([]byte("Сервис запущен"))
 	})
 
