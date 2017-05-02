@@ -51,6 +51,8 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 // BuildTree Строит дерево каталогов
 func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	b.batchChan = make(chan string, 500)
+	go b.Batch()
+
 	availableConnections = make(chan *goftp.FTP, b.MaxFTPCons)
 	for len(availableConnections) < b.MaxFTPCons {
 		availableConnections <- b.ftpConnect()
@@ -89,14 +91,7 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	b.Printf("Количество файлов: %d", b.tree.FilesCount())
 	b.Printf("Количество папок: %d", b.tree.DirsCount())
 
-	// b.Println("")
-	// b.Printf("Сохраним дерево в mysql")
-	// ts = time.Now()
-	// if err := b.TreeToMysql(); err != nil {
-	// 	panic(err)
-	// }
-	// b.Printf("Время сохранения: %v\n", time.Since(ts))
-
+	close(b.batchChan)
 	b.writeResultMessage()
 }
 
@@ -261,7 +256,7 @@ func closeAvailableConnections() {
 func (b *FTPBuilder) fileToQueue(fname string) error {
 	conn := b.redisPool.Get()
 	defer conn.Close()
-	_, err := conn.Do("LPUSH", "DownloadQueue", fname)
+	_, err := conn.Do("SADD", "DownloadQueue", fname)
 	return err
 }
 
@@ -299,39 +294,39 @@ func (b *FTPBuilder) writeResultMessage() {
 	}
 }
 
-func (b *FTPBuilder) TreeToMysql() error {
-	c := b.redisPool.Get()
-	println("treeToMysql")
-	l, err := redis.Int64(c.Do("LLEN", "DownloadQueue"))
-	if err != nil {
-		println("Error on get len queue")
-		return err
-	}
+// func (b *FTPBuilder) TreeToMysql() error {
+// 	c := b.redisPool.Get()
+// 	println("treeToMysql")
+// 	l, err := redis.Int64(c.Do("SCARD", "DownloadQueue"))
+// 	if err != nil {
+// 		println("Error on get len queue")
+// 		return err
+// 	}
 
-	for i := int64(0); i <= l+1; i = i + 500 {
-		paths, err := redis.Strings(c.Do("LRANGE", "DownloadQueue", i, i+500))
-		if err != nil {
-			return err
-		}
+// 	for i := int64(0); i <= l+1; i = i + 500 {
+// 		paths, err := redis.Strings(c.Do("LRANGE", "DownloadQueue", i, i+500))
+// 		if err != nil {
+// 			return err
+// 		}
 
-		buf := bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
-		lastIndex := len(paths) - 1
-		for j, path := range paths {
-			buf.WriteString("(\"")
-			buf.WriteString(path)
-			buf.WriteString("\",0)")
+// 		buf := bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
+// 		lastIndex := len(paths) - 1
+// 		for j, path := range paths {
+// 			buf.WriteString("(\"")
+// 			buf.WriteString(path)
+// 			buf.WriteString("\",0)")
 
-			if j < lastIndex {
-				buf.WriteString(",")
-			}
-		}
+// 			if j < lastIndex {
+// 				buf.WriteString(",")
+// 			}
+// 		}
 
-		if err = b.db.Exec(buf.String()).Error; err != nil {
-			fmt.Printf("%v\n", err)
-		}
-	}
-	return nil
-}
+// 		if err = b.db.Exec(buf.String()).Error; err != nil {
+// 			fmt.Printf("%v\n", err)
+// 		}
+// 	}
+// 	return nil
+// }
 func (b *FTPBuilder) Batch() {
 	var buf *bytes.Buffer
 	counter := 0
@@ -352,9 +347,14 @@ func (b *FTPBuilder) Batch() {
 
 			counter = 0
 			if err := b.db.Exec(buf.String()).Error; err != nil {
-				fmt.Printf("%v\n", err)
+				fmt.Printf("%v", err)
 			}
 
 		}
+	}
+
+	counter = 0
+	if err := b.db.Exec(buf.String()).Error; err != nil {
+		fmt.Printf("%v", err)
 	}
 }
