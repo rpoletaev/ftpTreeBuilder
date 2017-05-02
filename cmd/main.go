@@ -33,11 +33,11 @@ func main() {
 		w.Write([]byte("Сервис запущен"))
 	})
 
-	http.HandleFunc("/save_tree", func(w http.ResponseWriter, r *http.Request) {
-		println("===============")
-		go b.TreeToMysql()
-		w.Write([]byte("Сервис запущен"))
-	})
+	// http.HandleFunc("/save_tree", func(w http.ResponseWriter, r *http.Request) {
+	// 	println("===============")
+	// 	go b.TreeToMysql()
+	// 	w.Write([]byte("Сервис запущен"))
+	// })
 
 	// http.HandleFunc("/stop", func(w http.ResponseWriter, r *http.Request) {
 	// 	err = svc.Stop()
