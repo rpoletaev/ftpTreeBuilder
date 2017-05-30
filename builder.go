@@ -53,34 +53,18 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	b.batchChan = make(chan string, 500)
 	go b.Batch()
 
-	availableConnections = make(chan *goftp.FTP, b.MaxFTPCons)
-	for len(availableConnections) < b.MaxFTPCons {
-		availableConnections <- b.ftpConnect()
-	}
+	b.fillAvailableConnections()
 
 	stop := make(chan struct{})
 	//Периодически выводим количество свободных соединений
-	go func() {
-		ticker := time.NewTicker(20 * time.Second)
-		for {
-			select {
-			case <-ticker.C:
-				b.Println(len(availableConnections))
-			case <-stop:
-				ticker.Stop()
-				closeAvailableConnections()
-				return
-			}
-		}
-	}()
+	go b.showAwailConnections(stop)
 
-	b.tree = &Tree{}
-	root := &FTPNode{
-		tree: b.tree,
-		Path: b.RootNodeDirectory,
+	b.tree = &Tree{
+		Root: &FTPNode{
+			tree: b.tree,
+			Path: b.RootNodeDirectory,
+		},
 	}
-
-	b.tree.Root = root
 
 	ts := time.Now()
 	b.processDir(b.tree.Root)
@@ -294,6 +278,20 @@ func (b *FTPBuilder) writeResultMessage() {
 	}
 }
 
+func (b *FTPBuilder) showAwailConnections(stop chan struct{}) {
+	ticker := time.NewTicker(20 * time.Second)
+	for {
+		select {
+		case <-ticker.C:
+			b.Println(len(availableConnections))
+		case <-stop:
+			ticker.Stop()
+			closeAvailableConnections()
+			return
+		}
+	}
+}
+
 // func (b *FTPBuilder) TreeToMysql() error {
 // 	c := b.redisPool.Get()
 // 	println("treeToMysql")
@@ -327,6 +325,7 @@ func (b *FTPBuilder) writeResultMessage() {
 // 	}
 // 	return nil
 // }
+
 func (b *FTPBuilder) Batch() {
 	var buf *bytes.Buffer
 	counter := 0
@@ -356,5 +355,12 @@ func (b *FTPBuilder) Batch() {
 	counter = 0
 	if err := b.db.Exec(buf.String()).Error; err != nil {
 		fmt.Printf("%v", err)
+	}
+}
+
+func (b *FTPBuilder) fillAvailableConnections() {
+	availableConnections = make(chan *goftp.FTP, b.MaxFTPCons)
+	for len(availableConnections) < b.MaxFTPCons {
+		availableConnections <- b.ftpConnect()
 	}
 }
