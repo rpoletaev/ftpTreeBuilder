@@ -8,15 +8,32 @@ import (
 
 	"bytes"
 
-	"github.com/dutchcoders/goftp"
+	fp "path/filepath"
+
 	"github.com/garyburd/redigo/redis"
 	"github.com/jinzhu/gorm"
+	"github.com/rpoletaev/goftp"
 )
 
 var (
 	availableConnections chan *goftp.FTP
 	wg                   sync.WaitGroup
 )
+
+type dirInfo struct {
+	Path string
+	List []string
+}
+
+type fileInfo struct {
+	Name   string
+	Size   int
+	Folder string
+}
+
+func (f fileInfo) Path() string {
+	return fp.Join(f.Folder, f.Name)
+}
 
 type FTPBuilder struct {
 	*FTPBuilderConfig
@@ -25,7 +42,8 @@ type FTPBuilder struct {
 	redisPool          *redis.Pool
 	mySQLReconnectDone chan struct{}
 	batchChan          chan string
-	Done               bool
+	// filesChan          chan fileInfo
+	Done bool
 }
 
 func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
@@ -35,6 +53,7 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 	if err != nil {
 		panic(err)
 	}
+
 	dbc.AutoMigrate(&FTPNode{})
 	dbc.DB().SetConnMaxLifetime(time.Minute)
 	dbc.DB().SetMaxOpenConns(5)
@@ -44,6 +63,7 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 		mySQLReconnectDone: make(chan struct{}, 1),
 		redisPool:          newRedisPool(c.RedisConString, "t=95ZZZ%"),
 	}
+
 	go b.MySQLReconnect()
 	return b
 }
@@ -52,198 +72,165 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	b.batchChan = make(chan string, 500)
 	go b.Batch()
-
-	b.fillAvailableConnections()
-
-	stop := make(chan struct{})
-	//Периодически выводим количество свободных соединений
-	go b.showAwailConnections(stop)
-
-	b.tree = &Tree{
-		Root: &FTPNode{
-			tree: b.tree,
-			Path: b.RootNodeDirectory,
-		},
-	}
-
-	ts := time.Now()
-	b.processDir(b.tree.Root)
-	wg.Wait()
-	stop <- struct{}{}
-	close(stop)
-	b.Printf("Время построения дерева: %v\n", time.Since(ts))
-	b.Printf("Количество файлов: %d", b.tree.FilesCount())
-	b.Printf("Количество папок: %d", b.tree.DirsCount())
-
-	close(b.batchChan)
-	b.writeResultMessage()
-}
-
-// CreateTree достраивает дерево от переданного узла
-func (b *FTPBuilder) CreateTree(content *FTPNode) {
-	defer func() {
-		wg.Done()
-	}()
-	list, err := b.getList(content.Path)
+	ftp, err := b.getConnection()
 	if err != nil {
-		b.Printf("Error on process %s\n", content.Path)
-		b.Println("Continueing...")
-		content.ErrorText = err.Error()
+		println(err.Error())
 		return
 	}
 
-	if len(list) > 0 {
-		content.Children = make([]*FTPNode, len(list), len(list))
+	start := time.Now()
+	list, err := ftp.List("/fcs_regions")
+	ftp.Close()
+	if err != nil {
+		println(err.Error())
+		return
 	}
 
-	for i, item := range list {
-		name, err := NameFromFileSting(item)
-		if err != nil {
-			b.Printf("Не удалось получить имя из строки списка: %s\nError: %v", item, err)
-			continue
-		}
-
-		size, err := SizeFromFileString(item)
-		if err != nil {
-			continue
-		}
-
-		child := &FTPNode{
-			Path: path.Join(content.Path, name),
-			tree: content.tree,
-		}
-
-		if size <= 22 {
-			child.Downloaded = 1
-		} else {
-			child.Downloaded = 0
-		}
-
-		if IsDir(child.Name()) {
-			b.processDir(child)
-			content.Children[i] = child
-		} else if IsZip(child.Name()) {
-			model := &FTPNode{}
-			count := 0
-			b.db.Model(model).Where("path = ?", child.Path).Count(&count)
-			processFile(child)
-			if count == 0 {
-				b.batchChan <- child.Path
-				if err = b.fileToQueue(child.Path); err != nil {
-					b.Printf("%v\n", err)
-				}
+	regions := make(chan string, 10)
+	go func() {
+		for _, str := range list {
+			name, err := NameFromFileSting(str)
+			if err != nil {
+				println(err.Error())
+				continue
 			}
-			content.Children[i] = child
-		}
-	}
-}
 
-// Прочитаем с FTP список дочерних узлов
-func (b *FTPBuilder) getList(path string) ([]string, error) {
-	ftp := getConnection()
-	defer func() {
-		availableConnections <- ftp
+			if IsDir(name) {
+				regions <- name
+			}
+		}
+		close(regions)
 	}()
 
-	start := time.Now()
-	iteration := 1
-	var list []string
-	var err error
-	for list, err = ftp.List(path); err != nil; list, err = ftp.List(path) {
-		ftp.Close()
-		b.Println(err)
-		duration := time.Since(start)
-		b.Printf("Error on iteration %d process path: %s", iteration, path)
-		b.Printf("Timeout v duration: %v", duration)
-		b.Println("Process slipping")
-		if iteration == 5 {
-			return list, err
-		}
-		time.Sleep(20 * time.Second)
-		ftp = b.ftpConnect()
-		start = time.Now()
-		iteration++
+	files := make(chan fileInfo)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 10; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for region := range regions {
+				b.processRegion(region, files)
+			}
+		}()
 	}
 
-	return list, nil
-}
+	go func() {
+		wg.Wait()
+		println("close files channel")
+		close(files)
+	}()
 
-//Обработка листа каталога
-func (b *FTPBuilder) processDir(content *FTPNode) {
-	content.NodeType = NodeTypeFolder
-	content.tree.incrDirs()
-	// fmt.Println(content.Path)
-	wg.Add(1)
-	go b.CreateTree(content)
-}
-
-//Обработка листа файла
-func processFile(content *FTPNode) {
-	content.NodeType = NodeTypeArchive
-	content.tree.incrFiles()
-}
-
-//Пытаемся установить соединение 5 раз с интервалом в 10 секунд,
-//если пооытка удачная, то возвращаем установленное соединение
-func (b *FTPBuilderConfig) ftpConnect() *goftp.FTP {
-	c, err := connect(b.FTPAddr, b.FTPLogin, b.FTPPass)
-	if err == nil {
-		return c
+	var counter int64
+	for f := range files {
+		b.proccessFile(f)
+		counter++
 	}
 
-	for i := 0; i <= 4 && err != nil; i++ {
-		time.Sleep(10 * time.Second)
-		c, err = connect(b.FTPAddr, b.FTPLogin, b.FTPPass)
-		if err == nil {
-			return c
-		}
-	}
-
-	b.Fatalln("Не удается установить ftp соединение: ", err)
-	return c
+	close(b.batchChan)
+	println(counter)
+	println(time.Since(start).String())
+	b.writeResultMessage()
 }
 
-// попытка установки соединения и авторизация с ftp
-func connect(address, login, pass string) (*goftp.FTP, error) {
-	ftp, err := goftp.Connect(address)
+func (b *FTPBuilder) processRegion(name string, files chan fileInfo) {
+	println("processRegion", name)
+	regionPath := path.Join("/fcs_regions", name)
+	ftp, err := b.getConnection()
 	if err != nil {
-		return ftp, err
-	}
-	if login == "" && pass == "" {
-		return ftp, err
+		println(err.Error())
+		return
 	}
 
-	if err = ftp.Login(login, pass); err != nil {
-		panic("не удалось авторизоваться")
+	docs, err := ftp.List(regionPath)
+	if err != nil {
+		println(err.Error())
+		return
 	}
-	return ftp, err
+
+	for _, docItem := range docs {
+		doc, err := NameFromFileSting(docItem)
+		if err != nil {
+			println(err.Error())
+			continue
+		}
+		docPath := path.Join(regionPath, doc)
+		b.processDir(docPath, files)
+	}
 }
 
-// Получаем соединение из пула
-func getConnection() *goftp.FTP {
-	for {
-		select {
-		case c := <-availableConnections:
-			fmt.Println("return connection")
-			return c
+func (b *FTPBuilder) processDir(dirPath string, files chan fileInfo) error {
+	ftp, err := b.getConnection()
+	if err != nil {
+		return err
+	}
+
+	dirList, err := ftp.List(dirPath)
+	println("process dir ", dirPath)
+	if err != nil {
+		return err
+	}
+
+	ftp.Close()
+
+	for _, item := range dirList {
+		name, err := NameFromFileSting(item)
+		if err != nil {
+			return err
+		}
+
+		if IsDir(name) {
+			dir := path.Join(dirPath, name)
+			b.processDir(dir, files)
+			continue
+		}
+
+		if IsZip(name) {
+			size, err := SizeFromFileString(item)
+			if err != nil {
+				fmt.Println("Ошибка при получении размера файла", err.Error())
+				continue
+			}
+
+			files <- fileInfo{
+				Name: path.Join(dirPath, name),
+				Size: size,
+			}
 		}
 	}
+
+	return nil
 }
 
-func closeAvailableConnections() {
-	for c := range availableConnections {
-		c.Close()
+func (b *FTPBuilder) proccessFile(f fileInfo) {
+	var downloaded uint8
+	if f.Size <= 22 {
+		downloaded = 1
+	} else {
+		downloaded = 0
 	}
-	close(availableConnections)
+
+	model := &FTPNode{
+		Path:       f.Name,
+		Downloaded: downloaded,
+	}
+
+	count := 0
+	b.db.Model(model).Where("path = ?", f.Name).Count(&count)
+	if count == 0 {
+		b.batchChan <- f.Name
+		// if err := b.fileToQueue(p); err != nil {
+		// 	b.Printf("%v\n", err)
+		// }
+	}
 }
 
-func (b *FTPBuilder) fileToQueue(fname string) error {
+func (b *FTPBuilder) pathToErrors(path string) error {
 	conn := b.redisPool.Get()
 	defer conn.Close()
-	_, err := conn.Do("SADD", "DownloadQueue", fname)
+	_, err := conn.Do("SADD", "UnprocessPath", path)
 	return err
 }
-
 func newRedisPool(addr, pwd string) *redis.Pool {
 	return &redis.Pool{
 		MaxIdle:     3,
@@ -278,57 +265,10 @@ func (b *FTPBuilder) writeResultMessage() {
 	}
 }
 
-func (b *FTPBuilder) showAwailConnections(stop chan struct{}) {
-	ticker := time.NewTicker(20 * time.Second)
-	for {
-		select {
-		case <-ticker.C:
-			b.Println(len(availableConnections))
-		case <-stop:
-			ticker.Stop()
-			closeAvailableConnections()
-			return
-		}
-	}
-}
-
-// func (b *FTPBuilder) TreeToMysql() error {
-// 	c := b.redisPool.Get()
-// 	println("treeToMysql")
-// 	l, err := redis.Int64(c.Do("SCARD", "DownloadQueue"))
-// 	if err != nil {
-// 		println("Error on get len queue")
-// 		return err
-// 	}
-
-// 	for i := int64(0); i <= l+1; i = i + 500 {
-// 		paths, err := redis.Strings(c.Do("LRANGE", "DownloadQueue", i, i+500))
-// 		if err != nil {
-// 			return err
-// 		}
-
-// 		buf := bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
-// 		lastIndex := len(paths) - 1
-// 		for j, path := range paths {
-// 			buf.WriteString("(\"")
-// 			buf.WriteString(path)
-// 			buf.WriteString("\",0)")
-
-// 			if j < lastIndex {
-// 				buf.WriteString(",")
-// 			}
-// 		}
-
-// 		if err = b.db.Exec(buf.String()).Error; err != nil {
-// 			fmt.Printf("%v\n", err)
-// 		}
-// 	}
-// 	return nil
-// }
-
 func (b *FTPBuilder) Batch() {
 	var buf *bytes.Buffer
 	counter := 0
+
 	for s := range b.batchChan {
 		if counter == 0 {
 			buf = bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
@@ -338,12 +278,9 @@ func (b *FTPBuilder) Batch() {
 		buf.WriteString("\",0)")
 
 		if counter < 500 {
-
 			counter++
 			buf.WriteString(",")
-
 		} else {
-
 			counter = 0
 			if err := b.db.Exec(buf.String()).Error; err != nil {
 				fmt.Printf("%v", err)
@@ -352,15 +289,11 @@ func (b *FTPBuilder) Batch() {
 		}
 	}
 
-	counter = 0
-	if err := b.db.Exec(buf.String()).Error; err != nil {
+	println("Запишем оставшиеся записи")
+	bts := buf.Bytes()
+	q := string(bts[:len(bts)-1])
+	if err := b.db.Exec(q).Error; err != nil {
 		fmt.Printf("%v", err)
-	}
-}
-
-func (b *FTPBuilder) fillAvailableConnections() {
-	availableConnections = make(chan *goftp.FTP, b.MaxFTPCons)
-	for len(availableConnections) < b.MaxFTPCons {
-		availableConnections <- b.ftpConnect()
+		println(q)
 	}
 }
