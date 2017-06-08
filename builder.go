@@ -306,7 +306,7 @@ func (b *FTPBuilder) Batch() {
 }
 
 func orderFromPath(path string) int {
-	if strings.Contains(path, "curMonth") {
+	if strings.Contains(path, "currMonth") {
 		return 0
 	}
 
