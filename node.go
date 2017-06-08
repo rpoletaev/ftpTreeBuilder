@@ -2,8 +2,9 @@ package ftpTreeBuilder
 
 import (
 	//"github.com/dutchcoders/goftp"
-	"github.com/jinzhu/gorm"
 	"path/filepath"
+
+	"github.com/jinzhu/gorm"
 )
 
 const (
@@ -21,6 +22,7 @@ type FTPNode struct {
 	ErrorText  string
 	Children   []*FTPNode
 	Downloaded uint8
+	Sort       uint8
 }
 
 // Name returns node name

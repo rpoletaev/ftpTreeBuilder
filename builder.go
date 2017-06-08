@@ -10,6 +10,8 @@ import (
 	fp "path/filepath"
 	"strconv"
 
+	"strings"
+
 	"github.com/garyburd/redigo/redis"
 	"github.com/jinzhu/gorm"
 	"github.com/rpoletaev/goftp"
@@ -271,20 +273,23 @@ func (b *FTPBuilder) Batch() {
 
 	for s := range b.batchChan {
 		if counter == 0 {
-			buf = bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
+			buf = bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded, sort) VALUES ")
 		}
 
 		downloaded := strconv.FormatUint(uint64(s.Downloaded), 10)
 		buf.WriteString("(\"")
 		buf.WriteString(s.Path)
-		buf.WriteString(`",` + downloaded + `)`)
+		buf.WriteString(`", ` + downloaded)
+		buf.WriteString(`, ` + strconv.Itoa(orderFromPath(s.Path)) + `)`)
 
 		if counter < 500 {
 			counter++
 			buf.WriteString(",")
 		} else {
 			counter = 0
-			if err := b.db.Exec(buf.String()).Error; err != nil {
+			q := buf.String()
+			if err := b.db.Exec(q).Error; err != nil {
+				println(q)
 				fmt.Printf("%v", err)
 			}
 
@@ -298,4 +303,16 @@ func (b *FTPBuilder) Batch() {
 		fmt.Printf("%v", err)
 		println(q)
 	}
+}
+
+func orderFromPath(path string) int {
+	if strings.Contains(path, "curMonth") {
+		return 0
+	}
+
+	if strings.Contains(path, "prevMonth") {
+		return 1
+	}
+
+	return 2
 }
