@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"bytes"
-
 	fp "path/filepath"
+	"strconv"
 
 	"github.com/garyburd/redigo/redis"
 	"github.com/jinzhu/gorm"
@@ -41,7 +41,7 @@ type FTPBuilder struct {
 	db                 *gorm.DB
 	redisPool          *redis.Pool
 	mySQLReconnectDone chan struct{}
-	batchChan          chan string
+	batchChan          chan FTPNode
 	// filesChan          chan fileInfo
 	Done bool
 }
@@ -70,7 +70,7 @@ func GetFTPBuilder(c *FTPBuilderConfig) *FTPBuilder {
 
 // BuildTree Строит дерево каталогов
 func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
-	b.batchChan = make(chan string, 500)
+	b.batchChan = make(chan FTPNode, 500)
 	go b.Batch()
 	ftp, err := b.getConnection()
 	if err != nil {
@@ -210,15 +210,15 @@ func (b *FTPBuilder) proccessFile(f fileInfo) {
 		downloaded = 0
 	}
 
-	model := &FTPNode{
+	model := FTPNode{
 		Path:       f.Name,
 		Downloaded: downloaded,
 	}
 
 	count := 0
-	b.db.Model(model).Where("path = ?", f.Name).Count(&count)
+	b.db.Model(&model).Where("path = ?", f.Name).Count(&count)
 	if count == 0 {
-		b.batchChan <- f.Name
+		b.batchChan <- model
 		// if err := b.fileToQueue(p); err != nil {
 		// 	b.Printf("%v\n", err)
 		// }
@@ -273,9 +273,11 @@ func (b *FTPBuilder) Batch() {
 		if counter == 0 {
 			buf = bytes.NewBufferString("INSERT INTO ftp_nodes (path, downloaded) VALUES ")
 		}
+
+		downloaded := strconv.FormatUint(uint64(s.Downloaded), 10)
 		buf.WriteString("(\"")
-		buf.WriteString(s)
-		buf.WriteString("\",0)")
+		buf.WriteString(s.Path)
+		buf.WriteString(`",` + downloaded + `)`)
 
 		if counter < 500 {
 			counter++
