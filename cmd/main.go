@@ -16,7 +16,7 @@ func main() {
 		FTPAddr:           "ftp.zakupki.gov.ru:21",
 		FTPLogin:          "free",
 		FTPPass:           "free",
-		RootNodeDirectory: "/fcs_regions",
+		RootNodeDirectory: "/fcs_banks",
 		DBConString:       "root:test@tcp(mysql:3306)/cache?parseTime=true",
 		RedisConString:    "redis:6379",
 		ServicePort:       ":6767",

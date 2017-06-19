@@ -81,7 +81,7 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 	}
 
 	start := time.Now()
-	list, err := ftp.List("/fcs_regions")
+	list, err := ftp.List(b.RootNodeDirectory)
 	ftp.Close()
 	if err != nil {
 		println(err.Error())
@@ -137,7 +137,7 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 
 func (b *FTPBuilder) processRegion(name string, files chan fileInfo) {
 	println("processRegion", name)
-	regionPath := path.Join("/fcs_regions", name)
+	regionPath := path.Join(b.RootNodeDirectory, name)
 	ftp, err := b.getConnection()
 	if err != nil {
 		println(err.Error())
@@ -306,6 +306,7 @@ func (b *FTPBuilder) Batch() {
 }
 
 func orderFromPath(path string) int {
+	return 0
 	if strings.Contains(path, "currMonth") {
 		return 0
 	}
