@@ -1,0 +1,9 @@
+max_ftp_connections: 5
+service_port: ":6767"
+root_node_directory: "/fcs_banks"
+ftp_addr: "ftp.zakupki.gov.ru:21"
+ftp_login: "free"
+ftp_pass: "free"
+db_con_str: "root:test@tcp(mysql:3306)/cache?parseTime=true"
+redis_con_str: "redis:6379"
+redis_password: "t=95ZZZ%"

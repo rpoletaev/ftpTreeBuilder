@@ -112,7 +112,8 @@ func (b *FTPBuilder) BuildTree(done <-chan struct{}) {
 		go func() {
 			defer wg.Done()
 			for region := range regions {
-				b.processRegion(region, files)
+				// b.processRegion(region, files)
+				b.processDir(path.Join(b.RootNodeDirectory, region), files)
 			}
 		}()
 	}
